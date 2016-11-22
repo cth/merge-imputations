@@ -64,7 +64,7 @@ module ImputationQualityScores
 	# To simulate probabilities 
 	probs(pr::Tuple{Float64,Float64,Float64}) = check_probs([pr...])
 	probs(pr::Array{Float64,1}) = check_probs(pr)
-	probs(pr::Array{Tuple{Float64,Float64,Float64},1}) = foldl(+, [0,0,0], pr)
+	probs(pr::Array{Tuple{Float64,Float64,Float64},1}) = normalize(foldl(+, [0,0,0], pr),1)
 
 	# Comparisons of known and imputed genotypes
 	"The bhattacharya_coefficient measures overlap between to trinomial probability distributions"
