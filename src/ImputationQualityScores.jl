@@ -1,5 +1,7 @@
 module ImputationQualityScores
-	export dosage_to_likelihoods,likelihoods_to_dosage, rsquared_hat, proper_info
+	export dosage_to_likelihoods,likelihoods_to_dosage, rsquared_hat, proper_info,
+		bhattacharya_coefficient
+		
 
 	using Distributions
 	
@@ -8,6 +10,12 @@ module ImputationQualityScores
 	The formula is Dosage = Pr(Het|Data) + 2*Pr(Alt|Data)"
 	function likelihoods_to_dosage(p_aa, p_ab, p_bb)
 		p_bb * 2 + p_ab
+	end
+
+	type TrinomialDistribution
+		p11
+		p12
+		p22
 	end
 
 	likelihoods_to_dosage{T<:AbstractFloat}(triple::Tuple{T,T,T}) = likelihoods_to_dosage(triple[1],triple[2],triple[3])
@@ -50,6 +58,25 @@ module ImputationQualityScores
 		rSqHat = (sumXbar2/n-(meanX^2))/(sumX2/n-(meanX^2))
 	end
 
-	# Helli
+
+	# Comparisons of known and imputed genotypes
+	"The bhattacharya_coefficient measures overlap between to trinomial probability distributions"
+	# Can we support different types using a @generated function?
+	#macro etype(x)
+	#	if typeof(x) :< Tuple{Float64,Float64,Float64}	
+	#		[x...] 
+	#end
+	function bhattacharya_coefficient(
+			known::Tuple{Float64,Float64,Float64}, 
+			imputed::Tuple{Float64,Float64,Float64}) 
+		sum(sqrt.([known...].*[imputed...]))
+	end
+	function bhattacharya_coefficient(known::Multinomial, imputed::Multinomial)
+		@assert length(known) == length(imputed)
+		sum(sqrt.(probs(known).*probs(imputed)))
+	end
+
+	"Hellinger score is a measure of distance between to probability distributions"
+	function hellinger_score(known,imputed) = 1-sqrt(1-bhattacharya_coefficient(known,imputed))
 
 end # module
