@@ -15,6 +15,8 @@
 # Adaptation will be need for other formats.
 
 using ArgParse
+using BGZFStreams
+using Memoize
 
 ######## Calculation of INFO scores ########
 tiny_constant = 10.0^-30
@@ -41,16 +43,14 @@ end
 	string("$(field1);AN=$(allele_number);AC=$(allele_count);INFO=$(round(calc_info_score,3))")
 end
 
-
-@everywhere function process_genotypes( fields1, fields2, keep, dict1, dict2)
+@everywhere function process_genotypes( fields1, fields2, keep, dict1, dict2, )
 	gpidx = first(find(x -> x=="GP", split(fields1[9],':')))
 	gtidx = first(find(x -> x=="GT", split(fields1[9],':')))
 
-	println("processing genotype $(fields1[3])")
+	write(STDERR,"processing genotype $(fields1[3])\n")
+	maxgp(x) = foldl(max,x)
 
 	genotype_likelihood(x) = (map(x->parse(Float64,x), split(split(x,':')[gpidx],','))...)
-
-	maxgp(x) = foldl(max,x)
 
 	# FIXME: This function is depends on phased genotypes
 	function count_alleles(x) 
@@ -65,30 +65,27 @@ end
 			throw("Unknown allele $(tmp)")
 		end
 	end
-	
-	
-	best_genotypes = Array{String,1}()
-	genotype_likelihoods = Array{Tuple{Float64,Float64,Float64},1}()
+
+	best_genotypes = Array{SubString,1}(length(keep))
+	genotype_likelihoods = Array{Tuple{Float64,Float64,Float64},1}(length(keep))
 
 	allele_number = length(keep) * 2  
 	allele_count = 0
+	allele_incr = 0
 
 	indv_processed = 0 
-	for indv in keep
-		if indv_processed % 1000 == 0
-			write(STDERR,".")
-		end
+	for i in 1:length(keep) 
+		indv = keep[i]
 		max_gp_value = 0.0
-		genotype_field = nothing
-		max_gl = nothing 
 
 		try 
 			gl_indv1 = genotype_likelihood(fields1[dict1[indv]])
 			tmp_max_gp = foldl(max,gl_indv1)
 			if max_gp_value < tmp_max_gp
 				max_gp_value = tmp_max_gp 
-				genotype_field = fields1[dict1[indv]]
-				max_gl = gl_indv1
+				best_genotypes[i] = fields1[dict1[indv]]
+				genotype_likelihoods[i] = gl_indv1 
+
 			end
 		end
 
@@ -97,24 +94,14 @@ end
 			tmp_max_gp = foldl(max,gl_indv2)
 			if max_gp_value < tmp_max_gp
 				max_gp_value = tmp_max_gp 
-				genotype_field = fields2[dict2[indv]]
-				max_gl = gl_indv2
+				best_genotypes[i] = fields2[dict2[indv]]
+				genotype_likelihoods[i] = gl_indv2 
 			end
 		end
 
-		if genotype_field != nothing
-			push!(best_genotypes, genotype_field)
-			push!(genotype_likelihoods, max_gl)
-			allele_count = allele_count + count_alleles(genotype_field) 
-		else
-			write(STDERR, "Could not find individual $(indv)\n")
-		end
+		allele_count = allele_count + count_alleles(best_genotypes[i])
 		indv_processed =  indv_processed + 1
 	end
-
-	write(STDERR,'\n')
-
-	@assert length(keep) == length(best_genotypes)
 
 	(best_genotypes,process_info(fields1[8], fields2[8], allele_number, allele_count, rsquared_hat(genotype_likelihoods)))
 end
@@ -191,9 +178,14 @@ function main(args)
 		keep = nothing
 	end
 
-	vcf1 = open(parsed_args["vcf1"])
-	vcf2 = open(parsed_args["vcf2"])
-	out = open(parsed_args["out"],"w")
+	#vcf1 = open(parsed_args["vcf1"])
+	#vcf2 = open(parsed_args["vcf2"])
+
+	vcf1=BGZFStream(parsed_args["vcf1"])
+	vcf2=BGZFStream(parsed_args["vcf2"])
+
+	#out = open(parsed_args["out"],"w")
+	out = BGZFStream(parsed_args["out"],"w")
 
 	lines1 = eachline(vcf1)
 	lines2 = eachline(vcf2)
@@ -207,7 +199,6 @@ function main(args)
 	while !done(lines1, nothing) && !done(lines2,nothing)
 		(current_line1, state1) = next(lines1, state1)
 		(current_line2, state2) = next(lines2, state2)
-
 		(processed_line, keep, keep_positions1, keep_positions2) =  process_line(current_line1,current_line2, keep, keep_positions1,keep_positions2) 
 		write(out,processed_line)
 	end
