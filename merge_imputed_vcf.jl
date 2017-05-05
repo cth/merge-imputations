@@ -31,11 +31,12 @@ function rsquared_hat(likelihoods::Array{Tuple{Float64,Float64,Float64},1})
 	gprobs = probs(likelihoods)
 	expected = expected_dosage_variance(likelihoods,gprobs)
 	observed = observed_dosage_variance(likelihoods,gprobs)
-	if expected == observed == 0.0
-		1.0
-	else
-		observed / (expected+tiny_constant)
-	end
+	min(1.0, 
+		if expected == observed == 0.0
+			1.0
+		else
+			observed / (expected+tiny_constant)
+		end)
 end
 
 @everywhere function process_info(old_info1, old_info2,  allele_number, allele_count,calc_info_score)
@@ -43,8 +44,24 @@ end
 	string("$(field1);AN=$(allele_number);AC=$(allele_count);INFO=$(round(calc_info_score,3))")
 end
 
+# FIXME: This function is depends on phased genotypes
+macro count_alleles(x, gtidx) 
+	quote
+		tmp=split($x,':')[$gtidx]
+		if tmp == "0|0"
+			0
+		elseif tmp == "0|1" || tmp == "1|0"
+			1
+		elseif tmp == "1|1"
+			2
+		else
+			throw("Unknown allele $(tmp)")
+		end
+	end
+end
+
 # We know that the files has exactly the same number of header lines
-@everywhere function process_line(line1, line2, keep=nothing, dict1=nothing, dict2=nothing)
+function process_line(line1, line2, keep=nothing, dict1=nothing, dict2=nothing)
 	if (ismatch(r"^#CHROM", line1) && ismatch(r"^#CHROM", line2))
 		fields1 = split(chomp(line1))
 		fields2 = split(chomp(line2))
@@ -53,9 +70,7 @@ end
 			keep = unique(vcat(fields1[10:end],fields2[10:end]))
 		else
 			keep = intersect( keep, unique(vcat(fields1[10:end],fields2[10:end])))
-			#println(keep)
 		end
-		#println(keep)
 
 		write(STDERR, "Keeping $(length(keep)) individuals\n") 
 
@@ -84,76 +99,65 @@ end
 		gpidx = first(find(x -> x=="GP", split(fields1[9],':')))
 		gtidx = first(find(x -> x=="GT", split(fields1[9],':')))
 
-		best_genotypes = Array{SubString{String},1}(length(keep))
-		genotype_likelihoods = Array{Tuple{Float64,Float64,Float64},1}(length(keep))
+		best_genotypes = Array{String,1}()
+		#genotype_likelihoods = Array{Tuple{Float64,Float64,Float64},1}(length(keep))
+		best_likelihoods = Array{Tuple{Float64,Float64,Float64},1}()
 
-		write(STDERR,"processing genotype $(fields1[3])\n")
 
-		# FIXME: This function is depends on phased genotypes
-		function count_alleles(x) 
-			tmp=split(x,':')[gtidx]
-			if tmp == "0|0"
-				0
-			elseif tmp == "0|1" || tmp == "1|0"
-				1
-			elseif tmp == "1|1"
-				2
-			else
-				throw("Unknown allele $(tmp)")
-			end
-		end
 
 		allele_number = length(keep) * 2
 		allele_count = 0
 		allele_incr = 0
 
 		indv_processed = 0 
-		single_genotype_likelihood1=[.0,.0,.0]
-		single_genotype_likelihood2=[.0,.0,.0]
+		single_genotype_likelihood=[.0,.0,.0]
 
-		@time for i in 1:length(keep)
+		for i in 1:length(keep)
 			indv = keep[i]
 			tmp_max_gp = 0.0
 			max_gp_value = 0.0
 
 			if haskey(dict1,indv) 
 				likelihood_fields = split(split(fields1[dict1[indv]],':')[gpidx],',')
-				println(likelihood_fields)
 				for i in 1:3
-					single_genotype_likelihood1[i]=parse(Float64,likelihood_fields[i])
-					if single_genotype_likelihood1[i] > tmp_max_gp
-						tmp_max_gp = single_genotype_likelihood1[i] 
+					single_genotype_likelihood[i]=parse(Float64,likelihood_fields[i])
+					if single_genotype_likelihood[i] > tmp_max_gp
+						tmp_max_gp = single_genotype_likelihood[i] 
 					end
 				end
 				if max_gp_value < tmp_max_gp
 					max_gp_value = tmp_max_gp 
-					best_genotypes[i] = fields1[dict1[indv]]
-					genotype_likelihoods[i] = (single_genotype_likelihood1...)
-				end
-			elseif haskey(dict2,indv)	
-				likelihood_fields = split(split(x,':')[gpidx],',')
-				for i in 1:3
-					single_genotype_likelihood2[i]=parse(Float64,likelihood_fields[i])
-					if single_genotype_likelihood2[i] > tmp_max_gp
-						tmp_max_gp = single_genotype_likelihood2[i] 
-					end
-				end
-				if max_gp_value < tmp_max_gp
-					max_gp_value = tmp_max_gp 
-					best_genotypes[i] = fields1[dict1[indv]]
-					genotype_likelihoods[i] = (single_genotype_likelihood2...)
+					best_genotype = convert(String,fields1[dict1[indv]])
+					best_likelihood = (single_genotype_likelihood...)
 				end
 			end
 
-			allele_count = allele_count + count_alleles(best_genotypes[i])
+			if haskey(dict2,indv)	
+				likelihood_fields = split(split(fields2[dict2[indv]],':')[gpidx],',')
+				for i in 1:3
+					single_genotype_likelihood[i]=parse(Float64,likelihood_fields[i])
+					if single_genotype_likelihood[i] > tmp_max_gp
+						tmp_max_gp = single_genotype_likelihood[i] 
+					end
+				end
+				if max_gp_value < tmp_max_gp
+					max_gp_value = tmp_max_gp 
+					best_genotype = convert(String,fields2[dict2[indv]])
+					best_likelihood = (single_genotype_likelihood...)
+				end
+			end
+			push!(best_genotypes, best_genotype)
+			push!(best_likelihoods, best_likelihood)
+
+			allele_count = allele_count + @count_alleles(best_genotype,gtidx)
 			indv_processed =  indv_processed + 1
 		end
 
-		new_info = process_info(fields1[8], fields2[8], allele_number, allele_count, rsquared_hat(genotype_likelihoods))
+		new_info = process_info(fields1[8], fields2[8], allele_number, allele_count, rsquared_hat(best_likelihoods))
 
-		#join(new_genotypes,'\t')
-
-		return (join(foldl(vcat,[fields1[1:7],[new_info],best_genotypes,["\n"]]),'\t'),keep,dict1,dict2)
+		write(STDERR,join(foldl(vcat,[fields1[1:4], [fields1[8],fields2[8],new_info], ["\n"]])," "))
+	
+		return (join(foldl(vcat,[fields1[1:7],[new_info],[fields1[9]],best_genotypes,["\n"]]),'\t'),keep,dict1,dict2)
 	end
 end
 
