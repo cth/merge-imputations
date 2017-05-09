@@ -31,147 +31,79 @@ function rsquared_hat(likelihoods::Array{Tuple{Float64,Float64,Float64},1})
 	gprobs = probs(likelihoods)
 	expected = expected_dosage_variance(likelihoods,gprobs)
 	observed = observed_dosage_variance(likelihoods,gprobs)
-	min(1.0, 
+	max(0.0,min(1.0, 
 		if expected == observed == 0.0
 			1.0
 		else
 			observed / (expected+tiny_constant)
-		end)
+		end))
 end
 
-@everywhere function process_info(old_info1, old_info2,  allele_number, allele_count,calc_info_score)
-	field1 = split(old_info1,';')[1] # We expect first field is RefPanelAF
-	string("$(field1);AN=$(allele_number);AC=$(allele_count);INFO=$(round(calc_info_score,3))")
-end
+likelihoods_to_dosage(p_aa, p_ab, p_bb) = p_bb * 2 + p_ab
+likelihoods_to_dosage{T<:AbstractFloat}(triple::Tuple{T,T,T}) = likelihoods_to_dosage(triple[1],triple[2],triple[3])
 
-# FIXME: This function is depends on phased genotypes
-macro count_alleles(x, gtidx) 
-	quote
-		tmp=split($x,':')[$gtidx]
-		if tmp == "0|0"
-			0
-		elseif tmp == "0|1" || tmp == "1|0"
-			1
-		elseif tmp == "1|1"
-			2
-		else
-			throw("Unknown allele $(tmp)")
-		end
+function max_index(p)
+	max_index = 0
+	max_probability = 0.0
+	for i in 1:length(p)
+		if p[i] > max_probability
+			max_index = i
+        		max_probability = p[i]
+        	end
 	end
+	max_index
 end
 
-# We know that the files has exactly the same number of header lines
-function process_line(line1, line2, keep=nothing, dict1=nothing, dict2=nothing)
-	if (ismatch(r"^#CHROM", line1) && ismatch(r"^#CHROM", line2))
-		fields1 = split(chomp(line1))
-		fields2 = split(chomp(line2))
+max_prob(p) = p[max_index(p)]
 
-		if (keep == nothing)
-			keep = unique(vcat(fields1[10:end],fields2[10:end]))
-		else
-			keep = intersect( keep, unique(vcat(fields1[10:end],fields2[10:end])))
-		end
-
-		write(STDERR, "Keeping $(length(keep)) individuals\n") 
-
-		# reverse lookup positions
-		dict1 = Dict(fields1[i] => i for i in 1:length(fields1))
-		dict2 = Dict(fields2[i] => i for i in 1:length(fields2))
-
-		return (join(foldl(vcat,[fields1[1:9],keep,['\n']]),'\t'),keep,dict1,dict2)
-
-	elseif (ismatch(r"^#", line1) && ismatch(r"^#", line2))
-		return (line1,keep,dict1,dict2)
-	else
-		fields1 = split(line1)
-		fields2 = split(line2)
-
-		# Make sure that we are processing the same genotype
-		for i in 1:7
-			@assert fields1[i] == fields2[i]
-		end
-		# INFO fields fields1[8] != fields2[8] 
-
-		@assert fields1[9] == fields2[9]
-
-		#(new_genotypes,new_info) = process_genotypes(fields1, fields2, keep, dict1, dict2, best_genotypes, genotype_likelihoods)
-
-		gpidx = first(find(x -> x=="GP", split(fields1[9],':')))
-		gtidx = first(find(x -> x=="GT", split(fields1[9],':')))
-
-		best_genotypes = Array{String,1}()
-		#genotype_likelihoods = Array{Tuple{Float64,Float64,Float64},1}(length(keep))
-		best_likelihoods = Array{Tuple{Float64,Float64,Float64},1}()
+print_float(f) = @sprintf("%0.3f",f)
 
 
+alt_allele_count(p::Tuple{Float64,Float64,Float64}) = max_index(p)-1
+alt_allele_count(p::Array{Tuple{Float64,Float64,Float64},1}) = sum(map(alt_allele_count,p))
 
-		allele_number = length(keep) * 2
-		allele_count = 0
-		allele_incr = 0
+GT(p::Tuple{Float64,Float64,Float64}) = ("0/0","0/1","1/1")[max_index(p)]
+DS(p::Tuple{Float64,Float64,Float64}) = print_float(likelihoods_to_dosage(p[1],p[2],p[3]))
+GL(p::Tuple{Float64,Float64,Float64}) = join(map(print_float,p),',')
 
-		indv_processed = 0 
-		single_genotype_likelihood=[.0,.0,.0]
+INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),
+		";R2=",print_float(rsquared_hat(l)))
 
-		for i in 1:length(keep)
-			indv = keep[i]
-			tmp_max_gp = 0.0
-			max_gp_value = 0.0
+best_likelihood(likelihoods) = likelihoods[max_index(map(max_prob,likelihoods))]
 
-			if haskey(dict1,indv) 
-				likelihood_fields = split(split(fields1[dict1[indv]],':')[gpidx],',')
-				for i in 1:3
-					single_genotype_likelihood[i]=parse(Float64,likelihood_fields[i])
-					if single_genotype_likelihood[i] > tmp_max_gp
-						tmp_max_gp = single_genotype_likelihood[i] 
-					end
-				end
-				if max_gp_value < tmp_max_gp
-					max_gp_value = tmp_max_gp 
-					best_genotype = convert(String,fields1[dict1[indv]])
-					best_likelihood = (single_genotype_likelihood...)
-				end
-			end
+function merge_snp(lines, combined_likelihood) 
+	print(".")
+	fields = [ split(line) for line in lines ] 
 
-			if haskey(dict2,indv)	
-				likelihood_fields = split(split(fields2[dict2[indv]],':')[gpidx],',')
-				for i in 1:3
-					single_genotype_likelihood[i]=parse(Float64,likelihood_fields[i])
-					if single_genotype_likelihood[i] > tmp_max_gp
-						tmp_max_gp = single_genotype_likelihood[i] 
-					end
-				end
-				if max_gp_value < tmp_max_gp
-					max_gp_value = tmp_max_gp 
-					best_genotype = convert(String,fields2[dict2[indv]])
-					best_likelihood = (single_genotype_likelihood...)
-				end
-			end
-			push!(best_genotypes, best_genotype)
-			push!(best_likelihoods, best_likelihood)
+	gpidx = [first(find(x -> x=="GP", split(f[9],':'))) for f in fields ] 
 
-			allele_count = allele_count + @count_alleles(best_genotype,gtidx)
-			indv_processed =  indv_processed + 1
-		end
-
-		new_info = process_info(fields1[8], fields2[8], allele_number, allele_count, rsquared_hat(best_likelihoods))
-
-		write(STDERR,join(foldl(vcat,[fields1[1:4], [fields1[8],fields2[8],new_info], ["\n"]])," "))
-	
-		return (join(foldl(vcat,[fields1[1:7],[new_info],[fields1[9]],best_genotypes,["\n"]]),'\t'),keep,dict1,dict2)
+	best_likelihoods = Array{Tuple{Float64,Float64,Float64},1}()
+	for indv in 10:length(fields[1]) 
+		# Create an array Array{Tuple{Float64,Float64,Float64},1} for each individual
+		indv_likelihoods = [ 
+			(map(x->parse(Float64,x),split(split(fields[i][indv],':')[gpidx[i]],','))...)
+			for i in 1:length(fields) 
+		]
+		push!(best_likelihoods, combined_likelihood(indv_likelihoods)) 
 	end
+
+	join(foldl(vcat,
+		[fields[1][1:7],
+		INFO(best_likelihoods),
+		[fields[1][9]],
+		map(p->join([GT(p),DS(p),GL(p)],':'), best_likelihoods),
+		['\n']]),'\t')
 end
 
-# FIXME: We may need to do this with gzip readers instead
 function main(args)
-	s = ArgParseSettings("Example 2 for merge.jl: " *  # description
+	s = ArgParseSettings("Example for merge.jl: " *  # description
 		"flags, options help, " *
 		"required arguments.")
 
 	@add_arg_table s begin
-		"vcf1"
-		"vcf2"
-		"--keep" 
-		help = "A file with a list of ids to keep. One id per line."
+		"--vcfs"
+		nargs = '*'
+		help = "A list of VCF files to merge"
 		"--out"
 	end
 
@@ -181,49 +113,46 @@ function main(args)
 		println("  $key  =>  $(repr(val))")
 	end
 
-	if parsed_args["keep"] != nothing
-		keep = Array{String,1}()
-		open(parsed_args["keep"]) do keepfile
-			for line in eachline(keepfile)
-				push!(keep,chomp(line))
-			end
-		end
-	else
-		keep = nothing
-	end
+	@assert length(parsed_args["vcfs"]) > 0
 
-	#vcf1 = open(parsed_args["vcf1"])
-	#vcf2 = open(parsed_args["vcf2"])
-
-	vcf1=BGZFStream(parsed_args["vcf1"])
-	vcf2=BGZFStream(parsed_args["vcf2"])
-
-	#out = open(parsed_args["out"],"w")
+	vcfs = [ BGZFStream(vcf) for vcf in parsed_args["vcfs"] ]
 	out = BGZFStream(parsed_args["out"],"w")
 
-	lines1 = eachline(vcf1)
-	lines2 = eachline(vcf2)
+	lines = []
+	states = []
+	current_lines = []
+	for vcf in vcfs
+		lines_vcf = eachline(vcf)
+		push!(lines,lines_vcf)
+		push!(states,start(lines_vcf))
+		push!(current_lines,"##")
+	end
 
-	state1 = start(lines1)
-	state2 = start(lines2)
+	# Read past header lines
+	for i in 1:length(lines)
+		while ismatch(r"^##", current_lines[i])
+			current_lines[i], states[i] = next(lines[i], states[i])
+		end
+	end
 
-	keep_positions1 = nothing
-	keep_positions2 = nothing
+	@assert (all(map(line->ismatch(r"^#CHROM", line),current_lines)))
+	# FIXME: Add VCF headers!
+	write(out,current_lines[1])
 
-	while !done(lines1, nothing) && !done(lines2,nothing)
-		(current_line1, state1) = next(lines1, state1)
-		(current_line2, state2) = next(lines2, state2)
+	while all(map(x->!done(x,nothing), lines))
+		for i in 1:length(lines)
+			current_lines[i], states[i] = next(lines[i], states[i])
+		end
 
-		(processed_line, keep, keep_positions1, keep_positions2) =  process_line(current_line1,current_line2, keep, keep_positions1,keep_positions2) 
-
+		processed_line = merge_snp(current_lines,best_likelihood)
 		write(out,processed_line)
 	end
 
-	close(vcf1)
-	close(vcf2)
+	# Close open files
+	for vcf in vcfs
+		close(vcf)
+	end
 	close(out)
 end
 
 main(ARGS)
-
-# TEST: Merging the a vcf with itself should yield itself 
