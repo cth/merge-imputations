@@ -16,10 +16,9 @@
 
 using ArgParse
 using BGZFStreams
-using Memoize
 
-######## Calculation of INFO scores ########
-tiny_constant = 10.0^-30
+const tiny_constant = 10.0^-30
+
 check_probs(pr) = pr
 probs(pr::Tuple{Float64,Float64,Float64}) = check_probs([pr...])
 probs(pr::Array{Float64,1}) = check_probs(pr)
@@ -27,13 +26,13 @@ probs(pr::Array{Tuple{Float64,Float64,Float64},1}) = normalize([foldr((x,y)->(x[
 freqA(g) = 0.5*probs(g)[2] + probs(g)[1]
 expected_dosage_variance(g,gprobs) = 4*gprobs[1] + gprobs[2] - (2*freqA(gprobs))^2
 observed_dosage_variance(g,gprobs) = sum(map(x->(2*probs(x)[1] + probs(x)[2])^2,g) - (2*freqA(gprobs))^2)  / length(g)
-function rsquared_hat(likelihoods::Array{Tuple{Float64,Float64,Float64},1}) 
+function r2(likelihoods::Array{Tuple{Float64,Float64,Float64},1}) 
 	gprobs = probs(likelihoods)
 	expected = expected_dosage_variance(likelihoods,gprobs)
 	observed = observed_dosage_variance(likelihoods,gprobs)
 	max(0.0,min(1.0, 
 		if expected == observed == 0.0
-			1.0
+			0.99	
 		else
 			observed / (expected+tiny_constant)
 		end))
@@ -56,18 +55,19 @@ end
 
 max_prob(p) = p[max_index(p)]
 
-print_float(f) = @sprintf("%0.3f",f)
-
+putf(f) = @sprintf("%0.3f",f)
 
 alt_allele_count(p::Tuple{Float64,Float64,Float64}) = max_index(p)-1
 alt_allele_count(p::Array{Tuple{Float64,Float64,Float64},1}) = sum(map(alt_allele_count,p))
 
 GT(p::Tuple{Float64,Float64,Float64}) = ("0/0","0/1","1/1")[max_index(p)]
-DS(p::Tuple{Float64,Float64,Float64}) = print_float(likelihoods_to_dosage(p[1],p[2],p[3]))
-GL(p::Tuple{Float64,Float64,Float64}) = join(map(print_float,p),',')
+DS(p::Tuple{Float64,Float64,Float64}) = putf(likelihoods_to_dosage(p[1],p[2],p[3]))
+GP(p::Tuple{Float64,Float64,Float64}) = join(map(putf,p),',')
 
-INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),
-		";R2=",print_float(rsquared_hat(l)))
+INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=",putf(r2(l)),
+	";e=",expected_dosage_variance(l,probs(l)),
+	";o=",observed_dosage_variance(l,probs(l)))
+
 
 best_likelihood(likelihoods) = likelihoods[max_index(map(max_prob,likelihoods))]
 
@@ -75,7 +75,7 @@ function merge_snp(lines, combined_likelihood)
 	print(".")
 	fields = [ split(line) for line in lines ] 
 
-	gpidx = [first(find(x -> x=="GP", split(f[9],':'))) for f in fields ] 
+	gpidx = [ first(find(x -> x=="GP"||x=="GL", split(f[9],':'))) for f in fields ] 
 
 	best_likelihoods = Array{Tuple{Float64,Float64,Float64},1}()
 	for indv in 10:length(fields[1]) 
@@ -91,9 +91,16 @@ function merge_snp(lines, combined_likelihood)
 		[fields[1][1:7],
 		INFO(best_likelihoods),
 		[fields[1][9]],
-		map(p->join([GT(p),DS(p),GL(p)],':'), best_likelihoods),
+		map(p->join([GT(p),DS(p),GP(p)],':'), best_likelihoods),
 		['\n']]),'\t')
 end
+
+vcf_header="""##fileformat=VCFv4.1
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DS,Number=1,Type=Float,Description="Estimated Alternate Allele Dosage : [P(0/1)+2*P(1/1)]">
+##FORMAT=<ID=GP,Number=3,Type=Float,Description="Estimated Posterior Probabilities for Genotypes 0/0, 0/1 and 1/1 ">
+##INFO=<ID=R2,Number=1,Type=Float,Description="Estimated Imputation Accuracy">
+"""
 
 function main(args)
 	s = ArgParseSettings("Example for merge.jl: " *  # description
@@ -136,7 +143,7 @@ function main(args)
 	end
 
 	@assert (all(map(line->ismatch(r"^#CHROM", line),current_lines)))
-	# FIXME: Add VCF headers!
+	write(out,vcf_header)
 	write(out,current_lines[1])
 
 	while all(map(x->!done(x,nothing), lines))
