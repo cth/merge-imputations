@@ -38,6 +38,27 @@ function r2(likelihoods::Array{Tuple{Float64,Float64,Float64},1})
 		end))
 end
 
+function r2_sanger(likelihoods::Array{Tuple{Float64,Float64,Float64},1})
+	n = length(likelihoods)
+	esum = e2sum = fsum = 0.0
+
+	for l in likelihoods
+		norm = sum(l) 
+		l = [ i/norm for i in l ]
+		esum += l[2] + 2l[3]
+		e2sum += (l[2]  + 2l[3])^2
+		fsum += l[2] + 4l[3]
+	end
+
+	theta = esum / 2n
+
+	if (1.0 > freqA(likelihoods) > 0.0)
+		(1 - (fsum - e2sum) / (2n * theta * (1.0 - theta))) 
+	else
+		1.0
+	end
+end 
+
 likelihoods_to_dosage(p_aa, p_ab, p_bb) = p_bb * 2 + p_ab
 likelihoods_to_dosage{T<:AbstractFloat}(triple::Tuple{T,T,T}) = likelihoods_to_dosage(triple[1],triple[2],triple[3])
 
@@ -64,10 +85,12 @@ GT(p::Tuple{Float64,Float64,Float64}) = ("0/0","0/1","1/1")[max_index(p)]
 DS(p::Tuple{Float64,Float64,Float64}) = putf(likelihoods_to_dosage(p[1],p[2],p[3]))
 GP(p::Tuple{Float64,Float64,Float64}) = join(map(putf,p),',')
 
-INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=",putf(r2(l)),
-	";e=",expected_dosage_variance(l,probs(l)),
-	";o=",observed_dosage_variance(l,probs(l)))
+#INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=",putf(r2(l)),
+#	";e=",expected_dosage_variance(l,probs(l)),
+#	";o=",observed_dosage_variance(l,probs(l)))
 
+INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r2_sanger(l))
+#@sprintf("%0.5f", r2_sanger(l)))
 
 best_likelihood(likelihoods) = likelihoods[max_index(map(max_prob,likelihoods))]
 
