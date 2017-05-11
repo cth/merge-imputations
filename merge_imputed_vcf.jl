@@ -75,7 +75,7 @@ end
 function merge_snp(lines, combined_likelihood) 
 	fields = [ split(line) for line in lines ] 
 
-	println(fields[1][1:4])
+	println(join(fields[1][1:4],' '))
 
 	gpidx = [ first(find(x -> x=="GP"||x=="GL", split(f[9],':'))) for f in fields ] 
 
