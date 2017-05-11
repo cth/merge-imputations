@@ -73,8 +73,9 @@ INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r2(l))
 end
 
 function merge_snp(lines, combined_likelihood) 
-	print(".")
 	fields = [ split(line) for line in lines ] 
+
+	println(fields[1][1:4])
 
 	gpidx = [ first(find(x -> x=="GP"||x=="GL", split(f[9],':'))) for f in fields ] 
 
