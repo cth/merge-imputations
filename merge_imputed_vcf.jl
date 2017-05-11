@@ -1,7 +1,4 @@
-#!/home/fng514/bin/julia
-#$ -S /home/fng514/bin/julia
-#$ -cwd 
-# Christian Theil Have, 2017.
+#!/home/fng514/bin/julia #$ -S /home/fng514/bin/julia #$ -cwd # Christian Theil Have, 2017.
 # Merging of imputed data. 
 # 
 # Merges a selected set of individuals from a pair of imputations on the same panel.
@@ -17,52 +14,31 @@
 using ArgParse
 using BGZFStreams
 
-const tiny_constant = 10.0^-30
+@everywhere probs(pr::Array{Tuple{Float64,Float64,Float64},1}) = normalize([foldr((x,y)->(x[1]+y[1],x[2]+y[2], x[3]+y[3]), (.0,.0,.0), pr)...],1)
+@everywhere freqA(g) = 0.5*probs(g)[2] + probs(g)[1]
 
-check_probs(pr) = pr
-probs(pr::Tuple{Float64,Float64,Float64}) = check_probs([pr...])
-probs(pr::Array{Float64,1}) = check_probs(pr)
-probs(pr::Array{Tuple{Float64,Float64,Float64},1}) = normalize([foldr((x,y)->(x[1]+y[1],x[2]+y[2], x[3]+y[3]), (.0,.0,.0), pr)...],1)
-freqA(g) = 0.5*probs(g)[2] + probs(g)[1]
-expected_dosage_variance(g,gprobs) = 4*gprobs[1] + gprobs[2] - (2*freqA(gprobs))^2
-observed_dosage_variance(g,gprobs) = sum(map(x->(2*probs(x)[1] + probs(x)[2])^2,g) - (2*freqA(gprobs))^2)  / length(g)
-function r2(likelihoods::Array{Tuple{Float64,Float64,Float64},1}) 
-	gprobs = probs(likelihoods)
-	expected = expected_dosage_variance(likelihoods,gprobs)
-	observed = observed_dosage_variance(likelihoods,gprobs)
-	max(0.0,min(1.0, 
-		if expected == observed == 0.0
-			0.99	
-		else
-			observed / (expected+tiny_constant)
-		end))
-end
+@everywhere function r2(ps::Array{Tuple{Float64,Float64,Float64},1})
+	n = length(ps)
 
-function r2_sanger(likelihoods::Array{Tuple{Float64,Float64,Float64},1})
-	n = length(likelihoods)
 	esum = e2sum = fsum = 0.0
 
-	for l in likelihoods
+	for l in ps
 		norm = sum(l) 
 		l = [ i/norm for i in l ]
 		esum += l[2] + 2l[3]
-		e2sum += (l[2]  + 2l[3])^2
+		e2sum += (l[2] + 2l[3])^2
 		fsum += l[2] + 4l[3]
 	end
 
-	theta = esum / 2n
+	θ = esum / 2n
 
-	if (1.0 > freqA(likelihoods) > 0.0)
-		(1 - (fsum - e2sum) / (2n * theta * (1.0 - theta))) 
-	else
-		1.0
-	end
+	(1.0 > freqA(ps) > 0.0) ?  abs(1 - (fsum - e2sum) / (2n * θ * (1.0 - θ))) : 1.0
 end 
 
-likelihoods_to_dosage(p_aa, p_ab, p_bb) = p_bb * 2 + p_ab
-likelihoods_to_dosage{T<:AbstractFloat}(triple::Tuple{T,T,T}) = likelihoods_to_dosage(triple[1],triple[2],triple[3])
+@everywhere likelihoods_to_dosage(p_aa, p_ab, p_bb) = 2p_bb + p_ab
+@everywhere likelihoods_to_dosage{T<:AbstractFloat}(triple::Tuple{T,T,T}) = likelihoods_to_dosage(triple[1],triple[2],triple[3])
 
-function max_index(p)
+@everywhere function max_index(p)
 	max_index = 0
 	max_probability = 0.0
 	for i in 1:length(p)
@@ -74,7 +50,7 @@ function max_index(p)
 	max_index
 end
 
-max_prob(p) = p[max_index(p)]
+@everywhere max_prob(p) = p[max_index(p)]
 
 putf(f) = @sprintf("%0.3f",f)
 
@@ -85,14 +61,16 @@ GT(p::Tuple{Float64,Float64,Float64}) = ("0/0","0/1","1/1")[max_index(p)]
 DS(p::Tuple{Float64,Float64,Float64}) = putf(likelihoods_to_dosage(p[1],p[2],p[3]))
 GP(p::Tuple{Float64,Float64,Float64}) = join(map(putf,p),',')
 
-#INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=",putf(r2(l)),
-#	";e=",expected_dosage_variance(l,probs(l)),
-#	";o=",observed_dosage_variance(l,probs(l)))
+INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r2(l))
 
-INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r2_sanger(l))
-#@sprintf("%0.5f", r2_sanger(l)))
+@everywhere best_gp(ps) = ps[max_index(map(max_prob,ps))]
 
-best_likelihood(likelihoods) = likelihoods[max_index(map(max_prob,likelihoods))]
+@everywhere mean_gp(ps) = tuple(probs(ps)...)
+
+@everywhere function confidence_weighted_mean_gp(ps)
+	cs = map(p -> foldl(max,p) - foldl(min,p), ps)
+	tuple(probs([ (cs[i]*ps[i][1], cs[i]*ps[i][2], cs[i]*ps[i][3]) for i in 1:length(ps) ])...)
+end
 
 function merge_snp(lines, combined_likelihood) 
 	print(".")
@@ -100,20 +78,19 @@ function merge_snp(lines, combined_likelihood)
 
 	gpidx = [ first(find(x -> x=="GP"||x=="GL", split(f[9],':'))) for f in fields ] 
 
-	best_likelihoods = Array{Tuple{Float64,Float64,Float64},1}()
-	for indv in 10:length(fields[1]) 
+	best_likelihoods = @parallel vcat for indv in 10:length(fields[1]) 
 		# Create an array Array{Tuple{Float64,Float64,Float64},1} for each individual
 		indv_likelihoods = [ 
 			(map(x->parse(Float64,x),split(split(fields[i][indv],':')[gpidx[i]],','))...)
 			for i in 1:length(fields) 
 		]
-		push!(best_likelihoods, combined_likelihood(indv_likelihoods)) 
+		combined_likelihood(indv_likelihoods)
 	end
 
 	join(foldl(vcat,
 		[fields[1][1:7],
 		INFO(best_likelihoods),
-		[fields[1][9]],
+		["GT:DS:GP"],
 		map(p->join([GT(p),DS(p),GP(p)],':'), best_likelihoods),
 		['\n']]),'\t')
 end
@@ -134,16 +111,31 @@ function main(args)
 		"--vcfs"
 		nargs = '*'
 		help = "A list of VCF files to merge"
+		"--merge-mode"
+		help = "One of best,mean,weightedmean. Default is best."
+		default = "best"
 		"--out"
 	end
 
-	parsed_args = parse_args(s) # the result is a Dict{String,Any}
+	parsed_args = parse_args(s)
 	println("Parsed args:")
 	for (key,val) in parsed_args
 		println("  $key  =>  $(repr(val))")
 	end
 
 	@assert length(parsed_args["vcfs"]) > 0
+
+
+	# Merge method:
+	if parsed_args["merge-mode"] == "best"
+		mergefun = best_gp
+	elseif parsed_args["merge-mode"] == "mean"
+		mergefun = mean_gp
+	elseif parsed_args["merge-mode"] == "weightedmean"
+		mergefun = confidence_weighted_mean_gp
+	else
+		throw("Invalid merge-mode : $(parsed_args["merge-mode"])")
+	end	
 
 	vcfs = [ BGZFStream(vcf) for vcf in parsed_args["vcfs"] ]
 	out = BGZFStream(parsed_args["out"],"w")
@@ -174,7 +166,7 @@ function main(args)
 			current_lines[i], states[i] = next(lines[i], states[i])
 		end
 
-		processed_line = merge_snp(current_lines,best_likelihood)
+		processed_line = merge_snp(current_lines,mergefun)
 		write(out,processed_line)
 	end
 
