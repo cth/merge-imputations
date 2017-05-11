@@ -17,7 +17,7 @@ using BGZFStreams
 @everywhere probs(pr::Array{Tuple{Float64,Float64,Float64},1}) = normalize([foldr((x,y)->(x[1]+y[1],x[2]+y[2], x[3]+y[3]), (.0,.0,.0), pr)...],1)
 @everywhere freqA(g) = 0.5*probs(g)[2] + probs(g)[1]
 
-@everywhere function r2(ps::Array{Tuple{Float64,Float64,Float64},1})
+@everywhere function r²(ps::Array{Tuple{Float64,Float64,Float64},1})
 	n = length(ps)
 
 	esum = e2sum = fsum = 0.0
@@ -61,7 +61,7 @@ GT(p::Tuple{Float64,Float64,Float64}) = ("0/0","0/1","1/1")[max_index(p)]
 DS(p::Tuple{Float64,Float64,Float64}) = putf(likelihoods_to_dosage(p[1],p[2],p[3]))
 GP(p::Tuple{Float64,Float64,Float64}) = join(map(putf,p),',')
 
-INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r2(l))
+INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r²(l))
 
 @everywhere best_gp(ps) = ps[max_index(map(max_prob,ps))]
 
