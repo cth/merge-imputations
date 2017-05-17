@@ -14,6 +14,9 @@
 using ArgParse
 using BGZFStreams
 
+typealias GenotypeProbabilities Array{Tuple{Float64,Float64,Float64},1}
+typealias GenotypeProbability Tuple{Float64,Float64,Float64}
+
 @everywhere probs(pr::Array{Tuple{Float64,Float64,Float64},1}) = normalize([foldr((x,y)->(x[1]+y[1],x[2]+y[2], x[3]+y[3]), (.0,.0,.0), pr)...],1)
 @everywhere freqA(g) = 0.5*probs(g)[2] + probs(g)[1]
 
@@ -63,6 +66,7 @@ GP(p::Tuple{Float64,Float64,Float64}) = join(map(putf,p),',')
 
 INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r²(l))
 
+
 @everywhere best_gp(ps) = ps[max_index(map(max_prob,ps))]
 
 @everywhere mean_gp(ps) = tuple(probs(ps)...)
@@ -72,21 +76,38 @@ INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r²(l))
 	tuple(probs([ (cs[i]*ps[i][1], cs[i]*ps[i][2], cs[i]*ps[i][3]) for i in 1:length(ps) ])...)
 end
 
-function merge_snp(lines, combined_likelihood) 
+@everywhere best_info(ps) = () # Only a Placeholder
+
+
+
+function merge_snp(lines, mergefun) 
 	fields = [ split(line) for line in lines ] 
 
 	println(join(fields[1][1:4],' '))
 
 	gpidx = [ first(find(x -> x=="GP"||x=="GL", split(f[9],':'))) for f in fields ] 
 
-	best_likelihoods = @parallel vcat for indv in 10:length(fields[1]) 
-		# Create an array Array{Tuple{Float64,Float64,Float64},1} for each individual
-		indv_likelihoods = [ 
-			(map(x->parse(Float64,x),split(split(fields[i][indv],':')[gpidx[i]],','))...)
-			for i in 1:length(fields) 
-		]
-		combined_likelihood(indv_likelihoods)
+	# Create an array Array{Tuple{Float64,Float64,Float64},1} for each individual
+
+
+	best_likelihoods = []
+	let snp_probs(i,indv) = (map(x->parse(Float64,x),split(split(fields[i][indv],':')[gpidx[i]],','))...)
+		# Not very multi-dispatchy, but ...
+		if mergefun == best_info
+			# This needs access to others genotypes as well
+			# likelihoods is an array  of Array{Tuple{Float64,Float64,Float64},1} for each method
+			likelihoods = [ [ snp_probs(idx,indv) for indv in 10:length(first(fields)) ] for idx in 1:length(fields) ]
+			# Select likehoods of method with highest overall INFO score
+			best_likelihoods = likelihoods[max_index(map(r², likelihoods))]
+		else	
+			# Create an array Array{Tuple{Float64,Float64,Float64},1} for each individual:
+			best_likelihoods = @parallel vcat for indv in 10:length(fields[1]) 
+				# Create an array Array{Tuple{Float64,Float64,Float64},1} for each method and collapse with "mergefun"
+				mergefun( [ snp_probs(i,indv) for i in 1:length(fields) ] )
+			end
+		end
 	end
+
 
 	join(foldl(vcat,
 		[fields[1][1:7],
@@ -134,6 +155,8 @@ function main(args)
 		mergefun = mean_gp
 	elseif parsed_args["merge-mode"] == "weightedmean"
 		mergefun = confidence_weighted_mean_gp
+	elseif parsed_args["merge-mode"] == "bestinfo"
+		mergefun = best_info	
 	else
 		throw("Invalid merge-mode : $(parsed_args["merge-mode"])")
 	end	
