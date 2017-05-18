@@ -78,18 +78,14 @@ end
 
 @everywhere best_info(ps) = () # Only a Placeholder
 
-
-
-function merge_snp(lines, mergefun) 
-	fields = [ split(line) for line in lines ] 
+function merge_snp(fields, mergefun) 
+	@assert length(fields) > 0
 
 	println(join(fields[1][1:4],' '))
 
 	gpidx = [ first(find(x -> x=="GP"||x=="GL", split(f[9],':'))) for f in fields ] 
 
 	# Create an array Array{Tuple{Float64,Float64,Float64},1} for each individual
-
-
 	best_likelihoods = []
 	let snp_probs(i,indv) = (map(x->parse(Float64,x),split(split(fields[i][indv],':')[gpidx[i]],','))...)
 		# Not very multi-dispatchy, but ...
@@ -124,8 +120,28 @@ vcf_header="""##fileformat=VCFv4.1
 ##INFO=<ID=R2,Number=1,Type=Float,Description="Estimated Imputation Accuracy">
 """
 
+
+# Two vcf lines are considered to represent the same variant if 
+# chromosome AND position AND ref+alt allele are the same (but order of alt/ref may be opposite)
+function vcfline_same_variant(f1,f2)
+	f1[1] == f2[1] && f1[2] == f2[2] && sort(f1[3:4]) == sort(f2[3:4])
+end
+
+# Greater-than operator for vcf lines (split into fields) 
+function vcfline_before(f1,f2)
+	if f1[1] < f2[1] # Chromosome smaller
+		true
+	elseif f1[1] == f2[1] && f1[2] < f2[2] # Position smaller 
+		true
+	elseif f1[1] == f2[1] && f1[2] == f2[2] && string(sort(f1[3:4])) < string(sort(f2[3:4])) # allele ordering
+		true
+	else
+		false
+	end	
+end
+
 function main(args)
-	s = ArgParseSettings("Example for merge.jl: " *  # description
+	s = ArgParseSettings("Example for merge.jl: " *  # description 
 		"flags, options help, " *
 		"required arguments.")
 
@@ -185,17 +201,35 @@ function main(args)
 	write(out,vcf_header)
 	write(out,current_lines[1])
 
+	for i in 1:length(lines)
+		current_lines[i], states[i] = next(lines[i], states[i])
+	end
+	current_fields = [ split(line) for line in current_lines ] 
+
 	while all(map(x->!done(x,nothing), lines))
+		# Find smallest position
+		smallest =  1
 		for i in 1:length(lines)
-			current_lines[i], states[i] = next(lines[i], states[i])
+			if vcfline_before(current_fields[i], current_fields[smallest]) 
+				smallest=i
+			end
 		end
 
-		processed_line = merge_snp(current_lines,mergefun)
-		write(out,processed_line)
+		# Select only lines with smallest position for merging in this step and read next line from those files
+		process_lines = []
+		for i in 1:length(lines)
+			if vcfline_same_variant(current_fields[i], current_fields[smallest])
+				current_lines[i], states[i] = next(lines[i], states[i])
+				current_fields[i] = split(current_lines[i])
+				push!(process_lines, current_fields[i])
+			end
+		end
+
+		write(out,merge_snp(process_lines,mergefun))
 	end
 
 	# Close open files
-	for vcf in vcfs
+	for vcf in vcfs 
 		close(vcf)
 	end
 	close(out)
