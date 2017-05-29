@@ -66,7 +66,6 @@ GP(p::Tuple{Float64,Float64,Float64}) = join(map(putf,p),',')
 
 INFO(l)=string("AC=",length(l)*2,";AN=",alt_allele_count(l),";R2=", r²(l))
 
-
 @everywhere best_gp(ps) = ps[max_index(map(max_prob,ps))]
 
 @everywhere mean_gp(ps) = tuple(probs(ps)...)
@@ -99,11 +98,10 @@ function merge_snp(fields, mergefun)
 			# Create an array Array{Tuple{Float64,Float64,Float64},1} for each individual:
 			best_likelihoods = @parallel vcat for indv in 10:length(fields[1]) 
 				# Create an array Array{Tuple{Float64,Float64,Float64},1} for each method and collapse with "mergefun"
-				mergefun( [ snp_probs(i,indv) for i in 1:length(fields) ] )
+				mergefun( filter(isna,[ snp_probs(i,indv) for i in 1:length(fields) ]) )
 			end
 		end
 	end
-
 
 	join(foldl(vcat,
 		[fields[1][1:7],
@@ -139,6 +137,8 @@ function vcfline_before(f1,f2)
 		false
 	end	
 end
+
+revidx(lines) = [ Dict(f[i] => i for i in 10:length(f)) for f in in [ split(line) for line in lines ] ]
 
 function main(args)
 	s = ArgParseSettings("Example for merge.jl: " *  # description 
@@ -198,6 +198,20 @@ function main(args)
 	end
 
 	@assert (all(map(line->ismatch(r"^#CHROM", line),current_lines)))
+
+	# Build sample indices
+	sample_idx=revidx(current_lines)
+
+
+	# TODO: 
+	# And idea for a strategy that requires minimal changes to merge_snp function
+	# would be to "reconstruct" full lines with all samples in a paricular order
+	# where some samples may be NA. 
+	# 2) As an optimization we may only have to do this when not all files contain
+	# all samples in the same order...
+
+	samples_in_order = sort(foldl(union,map(keys,sample_idx)))
+
 	write(out,vcf_header)
 	write(out,current_lines[1])
 
@@ -221,11 +235,35 @@ function main(args)
 			if vcfline_same_variant(current_fields[i], current_fields[smallest])
 				current_lines[i], states[i] = next(lines[i], states[i])
 				current_fields[i] = split(current_lines[i])
-				push!(process_lines, current_fields[i])
+				push!((i,process_lines), current_fields[i])
 			end
 		end
 
-		write(out,merge_snp(process_lines,mergefun))
+		# I am going to need the index for each process_lines (To reverse map individuals
+		# I need to know hwich file they are from
+
+		# TODO: 
+		# And idea for a strategy that requires minimal changes to merge_snp function
+		# would be to "reconstruct" full lines with all samples in a paricular order
+		# where some samples may be NA. 
+
+		proclines = []
+		for (idx,line) in process_lines
+			aline=[]
+			sidx = sample_idx[idx] 
+			for i in 1:length(procline)
+				if < 10 # Copy over non-genotype fields
+					push!(aline, line[i])
+				elseif haskey(samples[idx],samples_in_order[i-10])
+					push!(aline,line[sample_idx[idx][samples_in_order[i-10]]])
+				else
+					push!(aline,NA)	
+				end
+			end
+			push!(proclines,aline)
+		end
+
+		write(out,merge_snp(proclines,mergefun))
 	end
 
 	# Close open files
