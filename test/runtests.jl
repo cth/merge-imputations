@@ -23,3 +23,6 @@ vcf_header_line(individuals) = join(vcat(["#CHROM","POS","ID","REF","ALT","QUAL"
 vcf_line(snp,individuals) = join(vcat("42",snp,join(snp,'_'),".",".","GP",[random_genotype() for i in individuals]),'\t')
 
 generate_imputed_vcf(snps, individuals) = join(vcat(vcf_header, vcf_header_line(individuals), [ vcf_line(snp,individuals) for snp in snps ]),'\n')
+
+
+
