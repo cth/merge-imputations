@@ -1,6 +1,5 @@
-# Eventually, I wnat it to be a module, but for now we will just create some test cases
-#using MergImp
-#using Base.Test
+using ImputedGenotypes
+using Base.Test
 
 bases = [ "A", "G", "C", "T" ]
 function random_base_pair()
@@ -25,4 +24,16 @@ vcf_line(snp,individuals) = join(vcat("42",snp,join(snp,'_'),".",".","GP",[rando
 generate_imputed_vcf(snps, individuals) = join(vcat(vcf_header, vcf_header_line(individuals), [ vcf_line(snp,individuals) for snp in snps ]),'\n')
 
 
+@test dosage_to_likelihoods(0.) == (1.,0.,0.) 
+@test dosage_to_likelihoods(1.) == (0.,1.,0.) 
+@test dosage_to_likelihoods(2.) == (0.,0.,1.) 
 
+@test likelihoods_to_dosage(1.,0.,0.) == (0.)  
+@test likelihoods_to_dosage(0.,1.,0.) == (1.)  
+@test likelihoods_to_dosage(1.,0.,1.) == (2.)  
+
+for i in 0:0.01:2
+	@test i ≈ likelihoods_to_dosage(dosage_to_likelihoods(i))
+end
+
+@test proper_info([(0.3333333, 0.3333333, 0.3333333), (1.0, 0.0, 0.0)])≈0.428571367347

@@ -1,12 +1,13 @@
-### merge-imputations - Merging of imputed data. 
+## ImputedGenotypes.jl
 
-MergeImp
-Mimp.jl
-MagicImp.jl
+[![Build Status](https://travis-ci.org/cth/ImputationQualityScores.jl.svg?branch=master)](https://travis-ci.org/cth/ImputationQualityScores.jl)
 
-MergImp
+[![Coverage Status](https://coveralls.io/repos/cth/ImputationQualityScores.jl/badge.svg?branch=master&service=github)](https://coveralls.io/github/cth/ImputationQualityScores.jl?branch=master)
 
-ImputedGenotypes
+[![codecov.io](http://codecov.io/github/cth/ImputationQualityScores.jl/coverage.svg?branch=master)](http://codecov.io/github/cth/ImputationQualityScores.jl?branch=master)
+
+
+#### merge-imputations - Merging of imputed data. 
 
 Merges a selected set of individuals from a pair of imputations on the same panel.
 If the same individual is present in both imputations, then the script will
@@ -31,3 +32,4 @@ Guide:
 - If you have completely overlapping sampling you should choose mean
 
 
+#### ImputationQualityStats
